@@ -825,7 +825,10 @@ void SID::clock(cycle_count delta_t)
   }
 
   // Clock filter.
-  filter.clock(delta_t, voice[0].output(), voice[1].output(), voice[2].output());
+  voice_lastvalue[0] = voice[0].output();
+  voice_lastvalue[1] = voice[1].output();
+  voice_lastvalue[2] = voice[2].output();
+  filter.clock(delta_t, voice_lastvalue[0], voice_lastvalue[1], voice_lastvalue[2]);
 
   // Clock external filter.
   extfilt.clock(delta_t, filter.output());
@@ -846,18 +849,18 @@ void SID::clock(cycle_count delta_t)
 // }
 //
 // ----------------------------------------------------------------------------
-int SID::clock(cycle_count& delta_t, short* buf, int n, int interleave)
+int SID::clock(cycle_count& delta_t, int16_t* buf, int n)
 {
   switch (sampling) {
   default:
   case SAMPLE_FAST:
-    return clock_fast(delta_t, buf, n, interleave);
+    return clock_fast(delta_t, buf, n);
   case SAMPLE_INTERPOLATE:
-    return clock_interpolate(delta_t, buf, n, interleave);
+    return clock_interpolate(delta_t, buf, n);
   case SAMPLE_RESAMPLE:
-    return clock_resample(delta_t, buf, n, interleave);
+    return clock_resample(delta_t, buf, n);
   case SAMPLE_RESAMPLE_FASTMEM:
-    return clock_resample_fastmem(delta_t, buf, n, interleave);
+    return clock_resample_fastmem(delta_t, buf, n);
   }
 }
 
@@ -865,11 +868,12 @@ int SID::clock(cycle_count& delta_t, short* buf, int n, int interleave)
 // ----------------------------------------------------------------------------
 // SID clocking with audio sampling - delta clocking picking nearest sample.
 // ----------------------------------------------------------------------------
-int SID::clock_fast(cycle_count& delta_t, short* buf, int n, int interleave)
+int SID::clock_fast(cycle_count& delta_t, int16_t* buf, int n)
 {
   int s;
 
-  for (s = 0; s < n; s++) {
+  n <<= 2;
+  for (s = 0; s < n;) {
     cycle_count next_sample_offset = sample_offset + cycles_per_sample + (1 << (FIXP_SHIFT - 1));
     cycle_count delta_t_sample = next_sample_offset >> FIXP_SHIFT;
 
@@ -885,10 +889,13 @@ int SID::clock_fast(cycle_count& delta_t, short* buf, int n, int interleave)
     }
 
     sample_offset = (next_sample_offset & FIXP_MASK) - (1 << (FIXP_SHIFT - 1));
-    buf[s*interleave] = amplify(output(), scaleFactor);
+    buf[s++] = amplify(output(), scaleFactor);
+    buf[s++] = voice_lastvalue[0] / 32; /* scale it down to 16bit signed */
+    buf[s++] = voice_lastvalue[1] / 32;
+    buf[s++] = voice_lastvalue[2] / 32;
   }
 
-  return s;
+  return s>>2;
 }
 
 
@@ -901,11 +908,12 @@ int SID::clock_fast(cycle_count& delta_t, short* buf, int n, int interleave)
 // external filter attenuates frequencies above 16kHz, thus reducing
 // sampling noise.
 // ----------------------------------------------------------------------------
-int SID::clock_interpolate(cycle_count& delta_t, short* buf, int n, int interleave)
+int SID::clock_interpolate(cycle_count& delta_t, int16_t* buf, int n)
 {
   int s;
 
-  for (s = 0; s < n; s++) {
+  n <<= 2;
+  for (s = 0; s < n;) {
     cycle_count next_sample_offset = sample_offset + cycles_per_sample;
     cycle_count delta_t_sample = next_sample_offset >> FIXP_SHIFT;
 
@@ -927,14 +935,16 @@ int SID::clock_interpolate(cycle_count& delta_t, short* buf, int n, int interlea
     }
 
     sample_offset = next_sample_offset & FIXP_MASK;
-
-    buf[s*interleave] = amplify(
+    buf[s++] = amplify(
       sample_prev + (sample_offset*(sample_now - sample_prev) >> FIXP_SHIFT),
       scaleFactor
     );
+    buf[s++] = voice_lastvalue[0] / 32; /* scale it down to 16bit signed */
+    buf[s++] = voice_lastvalue[1] / 32;
+    buf[s++] = voice_lastvalue[2] / 32;
   }
 
-  return s;
+  return s>>2;
 }
 
 
@@ -974,11 +984,12 @@ int SID::clock_interpolate(cycle_count& delta_t, short* buf, int n, int interlea
 // NB! the result of right shifting negative numbers is really
 // implementation dependent in the C++ standard.
 // ----------------------------------------------------------------------------
-int SID::clock_resample(cycle_count& delta_t, short* buf, int n, int interleave)
+int SID::clock_resample(cycle_count& delta_t, int16_t* buf, int n)
 {
   int s;
 
-  for (s = 0; s < n; s++) {
+  n <<= 2;
+  for (s = 0; s < n;) {
     cycle_count next_sample_offset = sample_offset + cycles_per_sample;
     cycle_count delta_t_sample = next_sample_offset >> FIXP_SHIFT;
 
@@ -1031,21 +1042,25 @@ int SID::clock_resample(cycle_count& delta_t, short* buf, int n, int interleave)
 
     v >>= FIR_SHIFT;
 
-    buf[s*interleave] = amplify(v, scaleFactor);
+    buf[s++] = amplify(v, scaleFactor);
+    buf[s++] = voice_lastvalue[0] / 32; /* scale it down to 16bit signed */
+    buf[s++] = voice_lastvalue[1] / 32;
+    buf[s++] = voice_lastvalue[2] / 32;
   }
 
-  return s;
+  return s>>2;
 }
 
 
 // ----------------------------------------------------------------------------
 // SID clocking with audio sampling - cycle based with audio resampling.
 // ----------------------------------------------------------------------------
-int SID::clock_resample_fastmem(cycle_count& delta_t, short* buf, int n, int interleave)
+int SID::clock_resample_fastmem(cycle_count& delta_t, int16_t* buf, int n)
 {
   int s;
 
-  for (s = 0; s < n; s++) {
+  n <<= 2;
+  for (s = 0; s < n;) {
     cycle_count next_sample_offset = sample_offset + cycles_per_sample;
     cycle_count delta_t_sample = next_sample_offset >> FIXP_SHIFT;
 
@@ -1078,10 +1093,18 @@ int SID::clock_resample_fastmem(cycle_count& delta_t, short* buf, int n, int int
 
     v >>= FIR_SHIFT;
 
-    buf[s*interleave] = amplify(v, scaleFactor);
+    buf[s++] = amplify(v, scaleFactor);
+    buf[s++] = voice_lastvalue[0] / 32; /* scale it down to 16bit signed */
+    buf[s++] = voice_lastvalue[1] / 32;
+    buf[s++] = voice_lastvalue[2] / 32;
   }
 
-  return s;
+  return s>>2;
+}
+
+short SID::voice_volume(int i) const
+{
+  return voice[i].envelope.output();
 }
 
 } // namespace reSID
